@@ -24,6 +24,9 @@ export class LLMRouter {
     if (this.config.name === 'anthropic') {
       return this.completeAnthropic(messages, onChunk)
     }
+    if (this.config.apiType === 'responses') {
+      return this.completeResponses(messages, onChunk)
+    }
     return this.completeOpenAI(messages, onChunk)
   }
 
@@ -42,6 +45,26 @@ export class LLMRouter {
 
     const data = await response.json() as { choices: Array<{ message: { content: string } }>; usage?: { prompt_tokens: number; completion_tokens: number } }
     return { content: data.choices[0]?.message?.content || '', promptTokens: data.usage?.prompt_tokens || 0, completionTokens: data.usage?.completion_tokens || 0 }
+  }
+
+  private async completeResponses(messages: ChatMessage[], onChunk?: (chunk: string) => void): Promise<LLMResponse> {
+    const url = `${this.config.baseUrl.replace(/\/$/, '')}/responses`
+    const stream = !!onChunk
+    const systemMsg = messages.find(m => m.role === 'system')
+    const inputMessages = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }))
+    const body: Record<string, unknown> = { model: this.config.model, input: inputMessages, max_output_tokens: this.config.maxTokens, stream }
+    if (systemMsg) body.instructions = systemMsg.content
+
+    const response = await this.fetchWithRetry(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` },
+      body: JSON.stringify(body)
+    })
+
+    if (stream) return this.parseResponsesStream(response, onChunk!)
+
+    const data = await response.json() as { output_text?: string; usage?: { input_tokens: number; output_tokens: number } }
+    return { content: data.output_text || '', promptTokens: data.usage?.input_tokens || 0, completionTokens: data.usage?.output_tokens || 0 }
   }
 
   private async completeAnthropic(messages: ChatMessage[], onChunk?: (chunk: string) => void): Promise<LLMResponse> {
@@ -89,6 +112,41 @@ export class LLMRouter {
           if (chunk) { fullContent += chunk; onChunk(chunk) }
           if (parsed.usage) { promptTokens = parsed.usage.prompt_tokens; completionTokens = parsed.usage.completion_tokens }
         } catch { /* skip */ }
+      }
+    }
+    return { content: fullContent, promptTokens, completionTokens }
+  }
+
+  private async parseResponsesStream(response: Response, onChunk: (chunk: string) => void): Promise<LLMResponse> {
+    let fullContent = '', promptTokens = 0, completionTokens = 0
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('No response body')
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let currentEvent = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) { currentEvent = ''; continue }
+        if (trimmed.startsWith('event: ')) { currentEvent = trimmed.slice(7); continue }
+        if (!trimmed.startsWith('data: ')) continue
+        try {
+          const parsed = JSON.parse(trimmed.slice(6)) as any
+          if (currentEvent === 'response.output_text.delta' && parsed.delta) {
+            fullContent += parsed.delta
+            onChunk(parsed.delta)
+          }
+          if (currentEvent === 'response.completed' && parsed.response?.usage) {
+            promptTokens = parsed.response.usage.input_tokens || 0
+            completionTokens = parsed.response.usage.output_tokens || 0
+          }
+        } catch { /* skip malformed JSON */ }
       }
     }
     return { content: fullContent, promptTokens, completionTokens }
