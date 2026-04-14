@@ -210,11 +210,11 @@ ${DEFAULT_REQUIREMENTS}`;
           lines.push(`  Headers: ${JSON.stringify(important)}`);
         if (r.body)
           lines.push(
-            `  Body: ${r.body.length > 2000 ? r.body.substring(0, 2000) + "..." : r.body}`,
+            `  Body: ${this.sanitizeBody(r.body, 2000)}`,
           );
         if (r.responseBody)
           lines.push(
-            `  Response: ${r.responseBody.length > 2000 ? r.responseBody.substring(0, 2000) + "..." : r.responseBody}`,
+            `  Response: ${this.sanitizeBody(r.responseBody, 2000)}`,
           );
         return lines.join("\n");
       })
@@ -227,7 +227,7 @@ ${DEFAULT_REQUIREMENTS}`;
     return allHooks
       .map(
         (h) =>
-          `[${h.hook_type}] ${h.function_name}: args=${h.arguments}${h.result ? ` result=${h.result}` : ""}`,
+          `[${h.hook_type}] ${h.function_name}: args=${this.sanitizeBody(h.arguments, 500)}${h.result ? ` result=${this.sanitizeBody(h.result, 500)}` : ""}`,
       )
       .join("\n");
   }
@@ -273,8 +273,8 @@ ${DEFAULT_REQUIREMENTS}`;
       lines.push(`- **${funcName}** (${hooks.length}次调用)`);
       // Show up to 3 representative calls
       for (const h of hooks.slice(0, 3)) {
-        const args = h.arguments.length > 200 ? h.arguments.substring(0, 200) + '...' : h.arguments;
-        const result = h.result ? (h.result.length > 200 ? h.result.substring(0, 200) + '...' : h.result) : '';
+        const args = this.sanitizeBody(h.arguments, 200);
+        const result = h.result ? this.sanitizeBody(h.result, 200) : '';
         lines.push(`  args=${args}${result ? ` → ${result}` : ''}`);
         if (h.call_stack) {
           const topFrame = h.call_stack.split('\n')[0]?.trim();
@@ -307,6 +307,22 @@ ${DEFAULT_REQUIREMENTS}`;
 ${lines.join('\n')}
 
 `;
+  }
+
+  /**
+   * Sanitize body content for safe embedding in prompts sent to LLM APIs.
+   * Removes control characters and non-printable chars that may break JSON
+   * parsing in intermediate proxies (e.g., Go-based API gateways).
+   */
+  private sanitizeBody(text: string, maxLen: number): string {
+    // Remove ASCII control chars (except \n \r \t) and Unicode replacement char
+    const cleaned = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uFFFD]/g, '');
+    if (cleaned.length <= maxLen) return cleaned;
+    // Unicode-safe truncation: avoid cutting surrogate pairs
+    let end = maxLen;
+    const code = cleaned.charCodeAt(end - 1);
+    if (code >= 0xD800 && code <= 0xDBFF) end--;
+    return cleaned.substring(0, end) + '...';
   }
 
   private filterHeaders(

@@ -40,6 +40,26 @@ type AnthropicContentBlock = AnthropicTextBlock | AnthropicToolUseBlock;
 const DEFAULT_TIMEOUT = 120000; // 2 minutes for initial connection + first response
 
 /**
+ * Sanitize string content in LLM request body to remove control characters
+ * that may break JSON parsing in intermediate proxies.
+ */
+function sanitizeForJson(obj: unknown): unknown {
+  if (typeof obj === 'string') {
+    // Remove ASCII control chars (except \n \r \t) and Unicode replacement char
+    return obj.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uFFFD]/g, '');
+  }
+  if (Array.isArray(obj)) return obj.map(sanitizeForJson);
+  if (obj !== null && typeof obj === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      result[key] = sanitizeForJson(value);
+    }
+    return result;
+  }
+  return obj;
+}
+
+/**
  * LLMRouter — Unified interface for calling different LLM providers.
  * Supports OpenAI, Anthropic, and OpenAI-compatible APIs.
  */
@@ -117,10 +137,10 @@ export class LLMRouter {
       const response = await this.fetchWithRetry(url, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type": "application/json; charset=utf-8",
           Authorization: `Bearer ${this.config.apiKey}`,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(sanitizeForJson(body)),
       });
 
       const data = (await response.json()) as {
@@ -227,11 +247,11 @@ export class LLMRouter {
       const response = await this.fetchWithRetry(url, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type": "application/json; charset=utf-8",
           "x-api-key": this.config.apiKey,
           "anthropic-version": "2023-06-01",
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(sanitizeForJson(body)),
       });
 
       const data = (await response.json()) as {
@@ -309,10 +329,10 @@ export class LLMRouter {
     const response = await this.fetchWithRetry(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
         Authorization: `Bearer ${this.config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeForJson(body)),
     });
 
     if (stream) return this.parseOpenAIStream(response, onChunk!);
@@ -349,10 +369,10 @@ export class LLMRouter {
     const response = await this.fetchWithRetry(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
         Authorization: `Bearer ${this.config.apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeForJson(body)),
     });
 
     if (stream) return this.parseResponsesStream(response, onChunk!);
@@ -389,11 +409,11 @@ export class LLMRouter {
     const response = await this.fetchWithRetry(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
         "x-api-key": this.config.apiKey,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(sanitizeForJson(body)),
     });
 
     if (stream) return this.parseAnthropicStream(response, onChunk!);
