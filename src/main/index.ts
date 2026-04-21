@@ -136,6 +136,11 @@ app.whenReady().then(async () => {
   // Initialize MITM Proxy
   const mitmConfig = loadMitmProxyConfig();
 
+  // Apply upstream proxy config to MITM proxy so outbound traffic routes correctly
+  if (proxyConfig && proxyConfig.type !== "none") {
+    mitmProxy.setUpstreamProxy(proxyConfig);
+  }
+
   // Wire proxy captured events → CaptureEngine (same data shape as CDP)
   mitmProxy.on("response-captured", (data) => {
     captureEngine.handleResponseCaptured({ ...data, source: "proxy" });

@@ -522,6 +522,8 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle("proxy:save", async (_event, config: ProxyConfig) => {
     saveProxyConfigFile(config);
+    // Sync upstream proxy to MITM proxy first (synchronous, won't fail)
+    deps.mitmProxy.setUpstreamProxy(config);
     await applyProxy(config);
     // Also apply to the active session's partition if one exists
     const activeElSession = sessionManager.getActiveElectronSession();
