@@ -41,6 +41,16 @@ const chatHistories = new Map<string, ChatMessage[]>();
 let currentDeps: MCPServerDeps | null = null;
 
 /**
+ * Check if the body (single or batch JSON-RPC) contains an initialize request.
+ */
+function isInitRequest(body: unknown): boolean {
+  if (Array.isArray(body)) {
+    return body.some((msg) => isInitializeRequest(msg));
+  }
+  return isInitializeRequest(body);
+}
+
+/**
  * Create a new McpServer instance with tools and resources registered.
  */
 function createMcpServerInstance(deps: MCPServerDeps): McpServer {
@@ -110,27 +120,25 @@ export async function initMCPServer(
         const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
         if (req.method === "DELETE") {
-          // Close session
           if (sessionId && transports.has(sessionId)) {
-            const transport = transports.get(sessionId)!;
-            await transport.close();
-            transports.delete(sessionId);
-            // Note: chatHistories is keyed by analysis session ID, not transport session ID.
-            // Do NOT delete here — it would be a no-op anyway (wrong key).
+            // Delegate to transport so internal state is cleaned up properly
+            await transports.get(sessionId)!.handleRequest(req, res);
+          } else {
+            res.writeHead(sessionId ? 404 : 400);
+            res.end(JSON.stringify({ error: "Session not found" }));
           }
-          res.writeHead(200);
-          res.end();
           return;
         }
 
         if (req.method === "GET") {
-          // SSE stream for existing session
           if (sessionId && transports.has(sessionId)) {
             await transports.get(sessionId)!.handleRequest(req, res);
-            return;
+          } else {
+            res.writeHead(sessionId ? 404 : 400);
+            res.end(
+              JSON.stringify({ error: "Missing or invalid session ID" }),
+            );
           }
-          res.writeHead(400);
-          res.end("Missing or invalid session ID");
           return;
         }
 
@@ -139,17 +147,20 @@ export async function initMCPServer(
 
         if (sessionId && transports.has(sessionId)) {
           await transports.get(sessionId)!.handleRequest(req, res, body);
-        } else if (!sessionId && isInitializeRequest(body)) {
+        } else if (!sessionId && isInitRequest(body)) {
+          // Create per-session McpServer first so it can be captured in the callback
+          const sessionServer = createMcpServerInstance(currentDeps!);
           const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sid) => {
               transports.set(sid, transport);
+              // Store mcpServer here – sessionId is available now
+              mcpServers.set(sid, sessionServer);
             },
           });
           transport.onclose = () => {
             if (transport.sessionId) {
               transports.delete(transport.sessionId);
-              // chatHistories is keyed by analysis session ID, not transport session ID — skip
               const srv = mcpServers.get(transport.sessionId);
               if (srv) {
                 srv.close().catch(() => {});
@@ -157,19 +168,18 @@ export async function initMCPServer(
               }
             }
           };
-          const sessionServer = createMcpServerInstance(currentDeps!);
           await sessionServer.connect(transport);
-          // Store after connect so sessionId is available
-          if (transport.sessionId) {
-            mcpServers.set(transport.sessionId, sessionServer);
-          }
           await transport.handleRequest(req, res, body);
+        } else if (sessionId && !transports.has(sessionId)) {
+          // Session ID provided but transport is gone (e.g. server restarted)
+          res.writeHead(404);
+          res.end(JSON.stringify({ error: "Session not found" }));
         } else {
           res.writeHead(400);
           res.end(
             JSON.stringify({
               error:
-                "Invalid request: missing session ID or not an initialize request",
+                "Bad request: missing session ID or not an initialize request",
             }),
           );
         }
