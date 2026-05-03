@@ -457,7 +457,8 @@ function registerTools(server: McpServer, deps: MCPServerDeps): void {
     async () => {
       await session.defaultSession.clearStorageData();
       await session.defaultSession.clearCache();
-      windowManager.getTabManager()?.getActiveWebContents()?.reload();
+      const wc = windowManager.getTabManager()?.getActiveWebContents();
+      if (wc && !wc.isDestroyed()) wc.reload();
       return text({ success: true });
     },
   );
@@ -471,7 +472,7 @@ function registerTools(server: McpServer, deps: MCPServerDeps): void {
     },
     async () => {
       const webContents = windowManager.getTabManager()?.getActiveWebContents();
-      if (!webContents) throw new Error("Browser not ready");
+      if (!webContents || webContents.isDestroyed()) throw new Error("Browser not ready");
       const image = await webContents.capturePage();
       const base64 = image.toPNG().toString("base64");
       return {
@@ -842,7 +843,7 @@ function registerTools(server: McpServer, deps: MCPServerDeps): void {
     },
     async ({ sessionId, speed, fromSequence, toSequence, skipMoves }) => {
       const webContents = windowManager.getTabManager()?.getActiveWebContents();
-      if (!webContents) throw new Error("Browser not ready");
+      if (!webContents || webContents.isDestroyed()) throw new Error("Browser not ready");
 
       let events = interactionEventsRepo.findBySession(sessionId, 10000);
       if (fromSequence != null) events = events.filter(e => e.sequence >= fromSequence);
@@ -873,7 +874,7 @@ function registerTools(server: McpServer, deps: MCPServerDeps): void {
     },
     async ({ action, selector, text: inputText, url, x, y, scrollDelta }) => {
       const webContents = windowManager.getTabManager()?.getActiveWebContents();
-      if (!webContents) throw new Error("Browser not ready");
+      if (!webContents || webContents.isDestroyed()) throw new Error("Browser not ready");
       const result = await replayEngine.executeAction(webContents, {
         type: action, selector, text: inputText, url, x, y, scrollDelta,
       });
@@ -894,7 +895,7 @@ function registerTools(server: McpServer, deps: MCPServerDeps): void {
     },
     async ({ filter }) => {
       const webContents = windowManager.getTabManager()?.getActiveWebContents();
-      if (!webContents) throw new Error("Browser not ready");
+      if (!webContents || webContents.isDestroyed()) throw new Error("Browser not ready");
 
       const selectorMap: Record<string, string> = {
         all: 'a, button, input, select, textarea, [role="button"], [onclick], [tabindex]',

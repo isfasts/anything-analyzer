@@ -1,4 +1,5 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, crashReporter } from "electron";
+import { initLogger } from "./logger";
 import { getDatabase, closeDatabase } from "./db/database";
 import { runMigrations } from "./db/migrations";
 import {
@@ -32,11 +33,23 @@ const mcpManager = new MCPClientManager();
 let sessionManagerRef: SessionManager | null = null;
 let quitInProgress = false;
 
+// Prevent unhandled promise rejections from crashing the main process.
+// Common source: executeJavaScript on crashed/destroyed WebContents.
+process.on("unhandledRejection", (reason) => {
+  console.warn("[Main] Unhandled rejection:", reason);
+});
+
 // MITM Proxy — initialized lazily inside whenReady (app.getPath requires ready state)
 let caManager: CaManager;
 let mitmProxy: MitmProxyServer;
 
 app.whenReady().then(async () => {
+  // Initialize structured logging (replaces console.log/warn/error globally)
+  initLogger();
+
+  // Enable native crash reporter — dumps go to userData/Crashpad/
+  crashReporter.start({ uploadToServer: false });
+
   // Initialize MITM CA & proxy (requires app.getPath)
   caManager = new CaManager(join(app.getPath("userData"), "mitm-ca"));
   mitmProxy = new MitmProxyServer(caManager);
@@ -163,6 +176,18 @@ app.whenReady().then(async () => {
       })
       .catch((err) => console.error("[Main] Failed to auto-start MITM proxy:", err));
   }
+
+  // Trust certificates issued by our MITM CA inside Electron.
+  // Without this, HTTPS requests through the MITM proxy fail with SSL errors
+  // that can crash Chromium's network stack (0xC0000005).
+  app.on("certificate-error", (event, _webContents, _url, _error, certificate, callback) => {
+    if (mitmProxy.isRunning() && certificate.issuerName === "Anything Analyzer CA") {
+      event.preventDefault();
+      callback(true);
+    } else {
+      callback(false);
+    }
+  });
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

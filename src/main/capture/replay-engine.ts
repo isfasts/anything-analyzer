@@ -12,6 +12,22 @@ interface ReplayOptions {
 export class ReplayEngine {
   private aborted = false
 
+  /** Send a CDP command, checking for destroyed WebContents first. */
+  private async cdp(
+    wc: WebContents,
+    method: string,
+    params: Record<string, unknown> = {}
+  ): Promise<Record<string, unknown>> {
+    if (wc.isDestroyed()) throw new Error('WebContents destroyed during replay')
+    return wc.debugger.sendCommand(method, params) as Promise<Record<string, unknown>>
+  }
+
+  /** Safely load a URL, checking for destroyed WebContents first. */
+  private async safeLoadURL(wc: WebContents, url: string): Promise<void> {
+    if (wc.isDestroyed()) throw new Error('WebContents destroyed during replay')
+    await wc.loadURL(url)
+  }
+
   async replay(
     webContents: WebContents,
     events: InteractionEvent[],
@@ -19,6 +35,10 @@ export class ReplayEngine {
   ): Promise<{ success: boolean; stepsCompleted: number; error?: string }> {
     this.aborted = false
     let completed = 0
+
+    if (webContents.isDestroyed()) {
+      return { success: false, stepsCompleted: 0, error: 'WebContents destroyed' }
+    }
 
     if (!webContents.debugger.isAttached()) {
       try {
@@ -30,7 +50,7 @@ export class ReplayEngine {
 
     try {
       for (let i = 0; i < events.length; i++) {
-        if (this.aborted) break
+        if (this.aborted || webContents.isDestroyed()) break
         const event = events[i]
 
         if (options.skipMoves && event.type === 'hover') {
@@ -63,6 +83,10 @@ export class ReplayEngine {
     webContents: WebContents,
     action: { type: string; selector?: string; text?: string; url?: string; x?: number; y?: number; scrollDelta?: number }
   ): Promise<{ success: boolean; error?: string }> {
+    if (webContents.isDestroyed()) {
+      return { success: false, error: 'WebContents destroyed' }
+    }
+
     if (!webContents.debugger.isAttached()) {
       try {
         webContents.debugger.attach('1.3')
@@ -75,7 +99,6 @@ export class ReplayEngine {
       switch (action.type) {
         case 'click': {
           if (action.selector) {
-            // Resolve coordinates from selector
             const coords = await this.resolveElementCenter(webContents, action.selector)
             if (!coords) return { success: false, error: `Element not found: ${action.selector}` }
             await this.clickAt(webContents, coords.x, coords.y)
@@ -89,13 +112,13 @@ export class ReplayEngine {
         case 'type': {
           if (!action.text) return { success: false, error: 'type requires text' }
           if (action.selector) {
-            await webContents.debugger.sendCommand('Runtime.evaluate', {
+            await this.cdp(webContents, 'Runtime.evaluate', {
               expression: `document.querySelector(${JSON.stringify(action.selector)})?.focus()`
             })
             await this.wait(50)
           }
           for (const char of action.text) {
-            await webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+            await this.cdp(webContents, 'Input.dispatchKeyEvent', {
               type: 'char', text: char
             })
             await this.wait(20)
@@ -106,14 +129,14 @@ export class ReplayEngine {
           const x = action.x ?? 400
           const y = action.y ?? 300
           const delta = action.scrollDelta ?? 200
-          await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+          await this.cdp(webContents, 'Input.dispatchMouseEvent', {
             type: 'mouseWheel', x, y, deltaX: 0, deltaY: delta
           })
           break
         }
         case 'navigate': {
           if (!action.url) return { success: false, error: 'navigate requires url' }
-          await webContents.loadURL(action.url)
+          await this.safeLoadURL(webContents, action.url)
           break
         }
         default:
@@ -132,33 +155,32 @@ export class ReplayEngine {
         const x = event.viewport_x ?? event.x ?? 0
         const y = event.viewport_y ?? event.y ?? 0
         const clickCount = event.type === 'dblclick' ? 2 : 1
-        await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+        await this.cdp(webContents, 'Input.dispatchMouseEvent', {
           type: 'mouseMoved', x, y
         })
         await this.wait(30)
-        await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+        await this.cdp(webContents, 'Input.dispatchMouseEvent', {
           type: 'mousePressed', x, y, button: 'left', clickCount
         })
-        await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+        await this.cdp(webContents, 'Input.dispatchMouseEvent', {
           type: 'mouseReleased', x, y, button: 'left', clickCount
         })
         break
       }
       case 'input': {
         if (event.selector && event.input_value != null) {
-          await webContents.debugger.sendCommand('Runtime.evaluate', {
+          await this.cdp(webContents, 'Runtime.evaluate', {
             expression: `document.querySelector(${JSON.stringify(event.selector)})?.focus()`
           })
           await this.wait(50)
-          // Clear existing value
-          await webContents.debugger.sendCommand('Runtime.evaluate', {
+          await this.cdp(webContents, 'Runtime.evaluate', {
             expression: `{
               const el = document.querySelector(${JSON.stringify(event.selector)});
               if (el) { el.value = ''; el.dispatchEvent(new Event('input', {bubbles:true})); }
             }`
           })
           for (const char of event.input_value) {
-            await webContents.debugger.sendCommand('Input.dispatchKeyEvent', {
+            await this.cdp(webContents, 'Input.dispatchKeyEvent', {
               type: 'char', text: char
             })
             await this.wait(15)
@@ -167,7 +189,7 @@ export class ReplayEngine {
         break
       }
       case 'scroll': {
-        await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+        await this.cdp(webContents, 'Input.dispatchMouseEvent', {
           type: 'mouseWheel',
           x: event.viewport_x ?? 400,
           y: event.viewport_y ?? 300,
@@ -178,8 +200,8 @@ export class ReplayEngine {
       }
       case 'navigate': {
         if (event.url) {
-          await webContents.loadURL(event.url)
-          await this.wait(500) // wait for navigation
+          await this.safeLoadURL(webContents, event.url)
+          await this.wait(500)
         }
         break
       }
@@ -188,7 +210,7 @@ export class ReplayEngine {
           const points = JSON.parse(event.path) as Array<{ x: number; y: number; t: number }>
           for (const point of points) {
             if (this.aborted) break
-            await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+            await this.cdp(webContents, 'Input.dispatchMouseEvent', {
               type: 'mouseMoved', x: point.x, y: point.y
             })
             await this.wait(20)
@@ -200,14 +222,14 @@ export class ReplayEngine {
   }
 
   private async clickAt(webContents: WebContents, x: number, y: number): Promise<void> {
-    await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await this.cdp(webContents, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved', x, y
     })
     await this.wait(30)
-    await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await this.cdp(webContents, 'Input.dispatchMouseEvent', {
       type: 'mousePressed', x, y, button: 'left', clickCount: 1
     })
-    await webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await this.cdp(webContents, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased', x, y, button: 'left', clickCount: 1
     })
   }
@@ -216,7 +238,7 @@ export class ReplayEngine {
     webContents: WebContents,
     selector: string
   ): Promise<{ x: number; y: number } | null> {
-    const result = await webContents.debugger.sendCommand('Runtime.evaluate', {
+    const result = await this.cdp(webContents, 'Runtime.evaluate', {
       expression: `(function() {
         const el = document.querySelector(${JSON.stringify(selector)});
         if (!el) return null;
@@ -224,7 +246,7 @@ export class ReplayEngine {
         return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
       })()`,
       returnByValue: true
-    })
+    }) as { result?: { value?: { x: number; y: number } | null } }
     return result?.result?.value ?? null
   }
 

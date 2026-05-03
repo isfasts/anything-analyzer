@@ -255,13 +255,15 @@ export class SessionManager {
 
     // Attach capture pipelines to all existing tabs
     for (const tab of tabManager.getAllTabs()) {
-      await this.attachCaptureToTab(tab.id, tab.view.webContents);
+      if (!tab.view.webContents.isDestroyed()) {
+        await this.attachCaptureToTab(tab.id, tab.view.webContents);
+      }
     }
 
     // Auto-attach to new tabs
     this.tabCreatedHandler = async (tabInfo) => {
       const tab = tabManager.getAllTabs().find((t) => t.id === tabInfo.id);
-      if (tab) {
+      if (tab && !tab.view.webContents.isDestroyed()) {
         await this.attachCaptureToTab(tab.id, tab.view.webContents);
       }
     };
@@ -285,6 +287,7 @@ export class SessionManager {
     webContents: WebContents,
   ): Promise<void> {
     if (this.tabCaptures.has(tabId)) return;
+    if (webContents.isDestroyed()) return;
 
     const cdp = new CdpManager();
     const injector = new JsInjector();
@@ -329,9 +332,9 @@ export class SessionManager {
       }
 
       // Also inject into current page immediately (for pages already loaded)
-      try {
-        webContents.executeJavaScript(stealthJs, true);
-      } catch { /* page not ready */ }
+      if (!webContents.isDestroyed()) {
+        webContents.executeJavaScript(stealthJs, true).catch(() => { /* page not ready */ });
+      }
 
       stealthCleanup = () => {
         // CDP scripts are automatically removed when debugger detaches — no manual cleanup needed
@@ -396,7 +399,9 @@ export class SessionManager {
 
     if (this.tabManager) {
       for (const tab of this.tabManager.getAllTabs()) {
-        await this.attachCaptureToTab(tab.id, tab.view.webContents);
+        if (!tab.view.webContents.isDestroyed()) {
+          await this.attachCaptureToTab(tab.id, tab.view.webContents);
+        }
       }
     }
 
@@ -498,7 +503,10 @@ export class SessionManager {
     if (createdNew) {
       const session = this.sessionsRepo.findById(sessionId);
       if (session?.target_url) {
-        tabManager.getActiveWebContents()?.loadURL(session.target_url).catch(() => {});
+        const wc = tabManager.getActiveWebContents();
+        if (wc && !wc.isDestroyed()) {
+          wc.loadURL(session.target_url).catch(() => {});
+        }
       }
     }
 
@@ -509,13 +517,15 @@ export class SessionManager {
 
     // Attach stealth to all existing tabs
     for (const tab of tabManager.getAllTabs()) {
-      this.attachStealthListeners(tab.id, tab.view.webContents);
+      if (!tab.view.webContents.isDestroyed()) {
+        this.attachStealthListeners(tab.id, tab.view.webContents);
+      }
     }
 
     // Auto-attach/detach for new/closed tabs
     this.stealthTabCreatedHandler = (tabInfo) => {
       const tab = tabManager.getAllTabs().find((t) => t.id === tabInfo.id);
-      if (tab) {
+      if (tab && !tab.view.webContents.isDestroyed()) {
         this.attachStealthListeners(tab.id, tab.view.webContents);
       }
     };
@@ -569,18 +579,17 @@ export class SessionManager {
     const stealthJs = buildStealthScript(JSON.stringify(profile));
 
     const onNavigate = () => {
-      try {
-        webContents.executeJavaScript(stealthJs, true);
-      } catch { /* page not ready or destroyed */ }
+      if (webContents.isDestroyed()) return;
+      webContents.executeJavaScript(stealthJs, true).catch(() => { /* page not ready or destroyed */ });
     };
 
     webContents.on("did-navigate", onNavigate);
     webContents.on("did-navigate-in-page", onNavigate);
 
     // Also inject into the current page immediately
-    try {
-      webContents.executeJavaScript(stealthJs, true);
-    } catch { /* page not ready */ }
+    if (!webContents.isDestroyed()) {
+      webContents.executeJavaScript(stealthJs, true).catch(() => { /* page not ready */ });
+    }
 
     this.stealthCleanups.set(tabId, () => {
       webContents.removeListener("did-navigate", onNavigate);
@@ -627,13 +636,15 @@ export class SessionManager {
 
     // Re-attach stealth to all tabs
     for (const tab of tabManager.getAllTabs()) {
-      this.attachStealthListeners(tab.id, tab.view.webContents);
+      if (!tab.view.webContents.isDestroyed()) {
+        this.attachStealthListeners(tab.id, tab.view.webContents);
+      }
     }
 
     // Re-register tab listeners
     this.stealthTabCreatedHandler = (tabInfo) => {
       const tab = tabManager.getAllTabs().find((t) => t.id === tabInfo.id);
-      if (tab) {
+      if (tab && !tab.view.webContents.isDestroyed()) {
         this.attachStealthListeners(tab.id, tab.view.webContents);
       }
     };

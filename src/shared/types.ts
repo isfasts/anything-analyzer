@@ -681,6 +681,11 @@ export interface ElectronAPI {
   getInteractionCount: (sessionId: string) => Promise<number>;
   clearInteractions: (sessionId: string) => Promise<void>;
   onInteractionRecorded: (callback: (data: { type: string; sequence: number; timestamp: number }) => void) => void;
+
+  // Log files
+  getLogPath: () => Promise<string>;
+  openLogFolder: () => Promise<void>;
+  exportLogs: () => Promise<boolean>;
 }
 
 declare global {

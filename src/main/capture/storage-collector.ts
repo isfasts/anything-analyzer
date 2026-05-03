@@ -22,7 +22,7 @@ export class StorageCollector extends EventEmitter {
 
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null }
-    if (this.webContents) this.collectAll()
+    if (this.webContents && !this.webContents.isDestroyed()) this.collectAll()
     this.webContents = null
     this.sessionId = null
   }
@@ -31,6 +31,7 @@ export class StorageCollector extends EventEmitter {
 
   private async collectAll(): Promise<void> {
     if (this.collecting || !this.webContents || !this.sessionId) return
+    if (this.webContents.isDestroyed()) return
     this.collecting = true
     const domain = this.getCurrentDomain()
     const timestamp = Date.now()
@@ -44,7 +45,7 @@ export class StorageCollector extends EventEmitter {
   }
 
   private async collectCookies(domain: string, timestamp: number): Promise<void> {
-    if (!this.webContents) return
+    if (!this.webContents || this.webContents.isDestroyed()) return
     try {
       const currentUrl = this.webContents.getURL()
       const result = await this.webContents.debugger.sendCommand('Network.getCookies', { urls: [currentUrl] }) as { cookies: Array<Record<string, unknown>> }
@@ -53,7 +54,7 @@ export class StorageCollector extends EventEmitter {
   }
 
   private async collectLocalStorage(domain: string, timestamp: number): Promise<void> {
-    if (!this.webContents) return
+    if (!this.webContents || this.webContents.isDestroyed()) return
     try {
       const result = await this.webContents.debugger.sendCommand('Runtime.evaluate', { expression: 'JSON.stringify(localStorage)', returnByValue: true }) as { result: { value?: string } }
       this.emit('storage-collected', { domain, storageType: 'localStorage', data: result.result?.value || '{}', timestamp })
@@ -61,7 +62,7 @@ export class StorageCollector extends EventEmitter {
   }
 
   private async collectSessionStorage(domain: string, timestamp: number): Promise<void> {
-    if (!this.webContents) return
+    if (!this.webContents || this.webContents.isDestroyed()) return
     try {
       const result = await this.webContents.debugger.sendCommand('Runtime.evaluate', { expression: 'JSON.stringify(sessionStorage)', returnByValue: true }) as { result: { value?: string } }
       this.emit('storage-collected', { domain, storageType: 'sessionStorage', data: result.result?.value || '{}', timestamp })
@@ -69,7 +70,7 @@ export class StorageCollector extends EventEmitter {
   }
 
   private getCurrentDomain(): string {
-    if (!this.webContents) return 'unknown'
+    if (!this.webContents || this.webContents.isDestroyed()) return 'unknown'
     try { return new URL(this.webContents.getURL()).hostname } catch { return 'unknown' }
   }
 }

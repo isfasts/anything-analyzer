@@ -41,9 +41,9 @@ export class WindowManager {
     });
 
     if (process.env["ELECTRON_RENDERER_URL"]) {
-      this.mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
+      this.mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]).catch(() => {});
     } else {
-      this.mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+      this.mainWindow.loadFile(join(__dirname, "../renderer/index.html")).catch(() => {});
     }
 
     return this.mainWindow;
@@ -78,12 +78,16 @@ export class WindowManager {
    */
   async navigateTo(url: string): Promise<void> {
     const wc = this.tabManager?.getActiveWebContents();
-    if (!wc) return;
+    if (!wc || wc.isDestroyed()) return;
     let normalizedUrl = url;
     if (!/^https?:\/\//i.test(url)) {
       normalizedUrl = `https://${url}`;
     }
-    await wc.loadURL(normalizedUrl);
+    try {
+      await wc.loadURL(normalizedUrl);
+    } catch (err) {
+      console.warn('[WindowManager] navigateTo failed:', (err as Error).message);
+    }
   }
 
   /**
@@ -91,7 +95,7 @@ export class WindowManager {
    */
   goBack(): void {
     const wc = this.tabManager?.getActiveWebContents();
-    if (wc?.canGoBack()) wc.goBack();
+    if (wc && !wc.isDestroyed() && wc.canGoBack()) wc.goBack();
   }
 
   /**
@@ -99,14 +103,15 @@ export class WindowManager {
    */
   goForward(): void {
     const wc = this.tabManager?.getActiveWebContents();
-    if (wc?.canGoForward()) wc.goForward();
+    if (wc && !wc.isDestroyed() && wc.canGoForward()) wc.goForward();
   }
 
   /**
    * Reload the active tab.
    */
   reload(): void {
-    this.tabManager?.getActiveWebContents()?.reload();
+    const wc = this.tabManager?.getActiveWebContents();
+    if (wc && !wc.isDestroyed()) wc.reload();
   }
 
   /**
@@ -136,7 +141,7 @@ export class WindowManager {
   }
 
   /**
-   * Show or hide the active tab's browser view.
+   * Show or hide the active tab's browser view using bounds (not add/remove).
    */
   setTargetViewVisible(visible: boolean): void {
     this.targetViewVisible = visible;
@@ -144,11 +149,15 @@ export class WindowManager {
     const activeTab = this.tabManager.getActiveTab();
     if (!activeTab) return;
 
-    if (visible) {
-      this.mainWindow.contentView.addChildView(activeTab.view);
-      this.tabManager.updateBounds();
-    } else {
-      this.mainWindow.contentView.removeChildView(activeTab.view);
+    try {
+      if (activeTab.view.webContents.isDestroyed()) return;
+      if (visible) {
+        this.tabManager.updateBounds();
+      } else {
+        activeTab.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+      }
+    } catch {
+      /* View may have been destroyed during operation — safe to ignore */
     }
   }
 
@@ -201,7 +210,11 @@ export class WindowManager {
   syncBrowserBounds(bounds: Electron.Rectangle): void {
     const tab = this.tabManager?.getActiveTab();
     if (tab) {
-      tab.view.setBounds(bounds);
+      try {
+        if (!tab.view.webContents.isDestroyed()) {
+          tab.view.setBounds(bounds);
+        }
+      } catch { /* view destroyed */ }
     }
   }
 

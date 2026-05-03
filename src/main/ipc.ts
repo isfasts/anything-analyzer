@@ -1,4 +1,4 @@
-import { ipcMain, dialog, app, session } from "electron";
+import { ipcMain, dialog, app, session, shell } from "electron";
 import type { LLMProviderConfig, MCPServerConfig, MCPServerSettings, MitmProxyConfig, ProxyConfig, PromptTemplate } from "@shared/types";
 import type { SessionManager } from "./session/session-manager";
 import type { AiAnalyzer } from "./ai/ai-analyzer";
@@ -178,7 +178,8 @@ export function registerIpcHandlers(deps: {
     const elSession = sessionManager.getActiveElectronSession() ?? session.defaultSession;
     await elSession.clearStorageData();
     await elSession.clearCache();
-    windowManager.getTabManager()?.getActiveWebContents()?.reload();
+    const wc = windowManager.getTabManager()?.getActiveWebContents();
+    if (wc && !wc.isDestroyed()) wc.reload();
   });
 
   ipcMain.handle("browser:setRatio", async (_event, ratio: number) => {
@@ -196,7 +197,7 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle("browser:toggleDevTools", async () => {
     const wc = windowManager.getTabManager()?.getActiveWebContents();
-    if (!wc) return;
+    if (!wc || wc.isDestroyed()) return;
     if (wc.isDevToolsOpened()) {
       wc.closeDevTools();
     } else {
@@ -245,6 +246,7 @@ export function registerIpcHandlers(deps: {
     tabManager.on(
       "tab-created",
       (tabInfo: { id: string; url: string; title: string }) => {
+        if (mainWin.isDestroyed()) return;
         mainWin.webContents.send("tabs:created", {
           id: tabInfo.id,
           url: tabInfo.url,
@@ -254,17 +256,20 @@ export function registerIpcHandlers(deps: {
       },
     );
     tabManager.on("tab-closed", (data: { tabId: string }) => {
+      if (mainWin.isDestroyed()) return;
       mainWin.webContents.send("tabs:closed", data);
     });
     tabManager.on(
       "tab-activated",
       (data: { tabId: string; url: string; title: string }) => {
+        if (mainWin.isDestroyed()) return;
         mainWin.webContents.send("tabs:activated", data);
       },
     );
     tabManager.on(
       "tab-updated",
       (data: { tabId: string; url?: string; title?: string; isLoading?: boolean }) => {
+        if (mainWin.isDestroyed()) return;
         mainWin.webContents.send("tabs:updated", data);
       },
     );
@@ -710,6 +715,31 @@ export function registerIpcHandlers(deps: {
 
   ipcMain.handle("interaction:clear", async (_event, sessionId: string) => {
     interactionEventsRepo.deleteBySession(sessionId);
+  });
+
+  // ---- Log Files ----
+
+  ipcMain.handle("log:getPath", () => {
+    return join(app.getPath("userData"), "logs", "main.log");
+  });
+
+  ipcMain.handle("log:openFolder", async () => {
+    const logDir = join(app.getPath("userData"), "logs");
+    shell.openPath(logDir);
+  });
+
+  ipcMain.handle("log:export", async () => {
+    const logPath = join(app.getPath("userData"), "logs", "main.log");
+    if (!existsSync(logPath)) return false;
+    const mainWin = windowManager.getMainWindow();
+    const result = await dialog.showSaveDialog(mainWin!, {
+      defaultPath: `anything-analyzer-logs-${new Date().toISOString().slice(0, 10)}.log`,
+      filters: [{ name: "Log Files", extensions: ["log", "txt"] }],
+    });
+    if (result.canceled || !result.filePath) return false;
+    const { copyFileSync } = await import("fs");
+    copyFileSync(logPath, result.filePath);
+    return true;
   });
 }
 

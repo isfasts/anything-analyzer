@@ -199,6 +199,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onAnalysisProgress: (callback: (chunk: string) => void) => {
     ipcRenderer.on("ai:progress", (_event, chunk) => callback(chunk));
   },
+
+  // Log files
+  getLogPath: () => ipcRenderer.invoke("log:getPath"),
+  openLogFolder: () => ipcRenderer.invoke("log:openFolder"),
+  exportLogs: () => ipcRenderer.invoke("log:export"),
+
   removeAllListeners: (channel: string) => {
     ipcRenderer.removeAllListeners(channel);
   },

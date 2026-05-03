@@ -86,7 +86,9 @@ export class Updater {
   }
 
   private sendStatus(status: UpdateStatus): void {
-    this.mainWindow?.webContents.send("update:status", status);
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+      this.mainWindow.webContents.send("update:status", status);
+    }
   }
 
   private formatNotes(

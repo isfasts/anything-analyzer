@@ -1,6 +1,6 @@
 {
   "name": "anything-analyzer",
-  "version": "3.6.3",
+  "version": "3.6.5",
   "description": "Universal web protocol analyzer with embedded browser and AI-powered analysis",
   "packageManager": "pnpm@10.24.0",
   "main": "./out/main/index.js",
@@ -19,6 +19,7 @@
     "@vscode/sudo-prompt": "^9.3.2",
     "antd": "^5.24.0",
     "better-sqlite3": "^11.8.1",
+    "electron-log": "^5.4.3",
     "electron-updater": "^6.8.3",
     "node-forge": "^1.4.0",
     "react": "^19.0.0",

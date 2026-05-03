@@ -33,6 +33,10 @@ export class CdpManager extends EventEmitter {
   async start(webContents: WebContents): Promise<void> {
     this.webContents = webContents
 
+    if (webContents.isDestroyed()) {
+      throw new Error('Cannot start CDP on destroyed WebContents')
+    }
+
     // Detach if already attached (e.g. leftover from a previous session)
     if (webContents.debugger.isAttached()) {
       try { webContents.debugger.detach() } catch { /* ignore */ }
@@ -72,6 +76,7 @@ export class CdpManager extends EventEmitter {
   async stop(): Promise<void> {
     if (!this.running || !this.webContents) return
     this.running = false
+    if (this.webContents.isDestroyed()) return
     try {
       await this.send('Fetch.disable', {})
     } catch { /* ignore */ }
@@ -79,13 +84,15 @@ export class CdpManager extends EventEmitter {
 
   detach(): void {
     if (!this.webContents) return
-    if (this.messageHandler) {
-      this.webContents.debugger.removeListener('message', this.messageHandler)
+    if (!this.webContents.isDestroyed()) {
+      if (this.messageHandler) {
+        this.webContents.debugger.removeListener('message', this.messageHandler)
+      }
+      if (this.detachedHandler) {
+        this.webContents.debugger.removeListener('detach', this.detachedHandler)
+      }
+      try { this.webContents.debugger.detach() } catch { /* already detached */ }
     }
-    if (this.detachedHandler) {
-      this.webContents.debugger.removeListener('detach', this.detachedHandler)
-    }
-    try { this.webContents.debugger.detach() } catch { /* already detached */ }
     this.pendingRequests.clear()
     this.webContents = null
   }
@@ -94,7 +101,7 @@ export class CdpManager extends EventEmitter {
    * Send a raw CDP command. Exposed for advanced use cases (e.g. stealth injection).
    */
   async sendCommand(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (!this.webContents) throw new Error('No WebContents attached')
+    if (!this.webContents || this.webContents.isDestroyed()) throw new Error('No WebContents attached')
     return this.webContents.debugger.sendCommand(method, params) as Promise<Record<string, unknown>>
   }
 

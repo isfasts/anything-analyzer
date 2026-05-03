@@ -49,10 +49,9 @@ export class JsInjector extends EventEmitter {
 
   private injectHooks(): void {
     if (!this.webContents || !this.hookScriptContent) return;
-    try {
-      this.webContents.executeJavaScript(this.hookScriptContent, true);
-    } catch {
-      /* not ready */
-    }
+    if (this.webContents.isDestroyed()) return;
+    this.webContents.executeJavaScript(this.hookScriptContent, true).catch(() => {
+      /* not ready or destroyed */
+    });
   }
 }

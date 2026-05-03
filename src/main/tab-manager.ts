@@ -74,8 +74,8 @@ export class TabManager extends EventEmitter {
 
     // 1. Stash current group ---------------------------------------------------
     if (this.currentGroupId !== null) {
-      // Remove active tab view from the window
-      this.hideActiveView();
+      // Remove ALL tab views from the window (stashing this group)
+      this.detachAllViews();
 
       this.sessionGroups.set(this.currentGroupId, {
         tabs: this.tabs,
@@ -90,7 +90,7 @@ export class TabManager extends EventEmitter {
     } else if (this.tabs.size > 0) {
       // First-ever switch: there may be initial default-session tabs.
       // Stash them under a special key so they don't leak.
-      this.hideActiveView();
+      this.detachAllViews();
       for (const [, tab] of this.tabs) {
         this.emit("tab-closed", { tabId: tab.id });
       }
@@ -116,6 +116,16 @@ export class TabManager extends EventEmitter {
       this.tabs = existing.tabs;
       this.activeElectronSession = existing.electronSession;
       this.sessionGroups.delete(groupId);
+
+      // Re-add all views as children (hidden) — they were detached when stashed
+      if (this.mainWindow) {
+        for (const [, tab] of this.tabs) {
+          try {
+            tab.view.setBounds(TabManager.HIDDEN_BOUNDS);
+            this.mainWindow.contentView.addChildView(tab.view);
+          } catch { /* view may have been destroyed */ }
+        }
+      }
 
       // Notify renderer about restored tabs
       for (const [, tab] of this.tabs) {
@@ -162,6 +172,9 @@ export class TabManager extends EventEmitter {
     }
   }
 
+  /** Zero-size rectangle used to hide inactive tabs (avoids removeChildView). */
+  private static readonly HIDDEN_BOUNDS = { x: 0, y: 0, width: 0, height: 0 };
+
   /**
    * Create a new tab. Optionally navigate to a URL.
    * The new tab becomes the active tab.
@@ -172,7 +185,7 @@ export class TabManager extends EventEmitter {
     const id = uuidv4();
     const view = new WebContentsView({
       webPreferences: {
-        sandbox: false,
+        sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
         preload: join(__dirname, "../preload/target-preload.js"),
@@ -187,6 +200,19 @@ export class TabManager extends EventEmitter {
 
     const tab: TabInfo = { id, view, url: url || "", title: "New Tab", isLoading: false };
     this.tabs.set(id, tab);
+
+    // Raise max listeners — our code + stealth/capture/injector + Electron internals
+    // easily exceed the default 10 for a single WebContents.
+    view.webContents.setMaxListeners(30);
+
+    // Add view as a child immediately (hidden). activateTab will show it.
+    // We keep ALL tab views as children to avoid native widget detach/reattach
+    // which triggers blink.mojom.WidgetHost crashes.
+    view.setBounds(TabManager.HIDDEN_BOUNDS);
+    try {
+      this.mainWindow.contentView.addChildView(view);
+    } catch { /* window may be destroyed */ }
+
     this.setupTabListeners(tab);
     this.activateTab(id);
 
@@ -214,16 +240,7 @@ export class TabManager extends EventEmitter {
       this.createTab();
     }
 
-    // Remove from display
-    if (this.mainWindow) {
-      try {
-        this.mainWindow.contentView.removeChildView(tab.view);
-      } catch {
-        /* already removed */
-      }
-    }
-
-    // If closing the active tab, activate another one
+    // If closing the active tab, activate another one first
     if (this.activeTabId === tabId) {
       const tabIds = Array.from(this.tabs.keys());
       const idx = tabIds.indexOf(tabId);
@@ -236,46 +253,51 @@ export class TabManager extends EventEmitter {
     this.tabs.delete(tabId);
     this.destroyedTabs.add(tabId);
 
-    // Destroy the WebContentsView
+    // Now remove from window and destroy (only removeChildView on actual destruction)
+    if (this.mainWindow) {
+      try {
+        this.mainWindow.contentView.removeChildView(tab.view);
+      } catch { /* already removed */ }
+    }
     try {
       tab.view.webContents.close();
-    } catch {
-      /* already destroyed */
-    }
+    } catch { /* already destroyed */ }
 
     this.emit("tab-closed", { tabId });
   }
 
   /**
-   * Switch the active tab. Removes the old tab's view and shows the new one.
+   * Switch the active tab. Hides the old tab (zero bounds) and shows the new one.
+   * Views are never removed/re-added — only bounds change — to avoid
+   * blink.mojom.WidgetHost Mojo IPC crashes.
    */
   activateTab(tabId: string): void {
     if (!this.mainWindow) return;
     const tab = this.tabs.get(tabId);
     if (!tab) return;
 
-    // Remove the current active tab's view
+    // Hide the previous active tab by setting zero bounds
     if (this.activeTabId && this.activeTabId !== tabId) {
       const oldTab = this.tabs.get(this.activeTabId);
       if (oldTab) {
         try {
-          this.mainWindow.contentView.removeChildView(oldTab.view);
-        } catch {
-          /* not in view */
-        }
+          oldTab.view.setBounds(TabManager.HIDDEN_BOUNDS);
+        } catch { /* view destroyed */ }
       }
     }
 
-    // Add the new tab's view only if browser is meant to be visible
-    const shouldShow = this.visibilityChecker ? this.visibilityChecker() : true;
-    if (shouldShow) {
-      this.mainWindow.contentView.addChildView(tab.view);
-    }
     this.activeTabId = tabId;
 
-    // Apply bounds
-    if (this.boundsCalculator) {
-      tab.view.setBounds(this.boundsCalculator());
+    // Show the new tab with proper bounds (or hide if browser area is invisible)
+    const shouldShow = this.visibilityChecker ? this.visibilityChecker() : true;
+    if (shouldShow && this.boundsCalculator) {
+      try {
+        tab.view.setBounds(this.boundsCalculator());
+      } catch { /* view may have been destroyed */ }
+    } else {
+      try {
+        tab.view.setBounds(TabManager.HIDDEN_BOUNDS);
+      } catch { /* view destroyed */ }
     }
 
     this.emit("tab-activated", { tabId, url: tab.url, title: tab.title });
@@ -288,7 +310,11 @@ export class TabManager extends EventEmitter {
     if (!this.activeTabId || !this.boundsCalculator) return;
     const tab = this.tabs.get(this.activeTabId);
     if (tab) {
-      tab.view.setBounds(this.boundsCalculator());
+      try {
+        if (!tab.view.webContents.isDestroyed()) {
+          tab.view.setBounds(this.boundsCalculator());
+        }
+      } catch { /* view destroyed */ }
     }
   }
 
@@ -326,17 +352,9 @@ export class TabManager extends EventEmitter {
   destroyAllTabs(): void {
     for (const [tabId, tab] of this.tabs) {
       if (this.mainWindow) {
-        try {
-          this.mainWindow.contentView.removeChildView(tab.view);
-        } catch {
-          /* ignore */
-        }
+        try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* ignore */ }
       }
-      try {
-        tab.view.webContents.close();
-      } catch {
-        /* ignore */
-      }
+      try { tab.view.webContents.close(); } catch { /* ignore */ }
       this.destroyedTabs.add(tabId);
     }
     this.tabs.clear();
@@ -359,11 +377,14 @@ export class TabManager extends EventEmitter {
 
   // ---- Internal helpers ----
 
-  /** Remove the active tab's view from the window (without destroying it). */
-  private hideActiveView(): void {
-    if (!this.mainWindow || !this.activeTabId) return;
-    const tab = this.tabs.get(this.activeTabId);
-    if (tab) {
+  /**
+   * Remove ALL current-group tab views from the window.
+   * Used when stashing a session group — those views will sit dormant and
+   * must not remain as children (they belong to a different partition).
+   */
+  private detachAllViews(): void {
+    if (!this.mainWindow) return;
+    for (const [, tab] of this.tabs) {
       try {
         this.mainWindow.contentView.removeChildView(tab.view);
       } catch { /* not in view */ }
@@ -385,6 +406,7 @@ export class TabManager extends EventEmitter {
 
     // Track loading state
     wc.on("did-start-loading", () => {
+      if (wc.isDestroyed()) return;
       tab.isLoading = true;
       this.emit("tab-updated", {
         tabId: tab.id,
@@ -394,6 +416,7 @@ export class TabManager extends EventEmitter {
       });
     });
     wc.on("did-stop-loading", () => {
+      if (wc.isDestroyed()) return;
       tab.isLoading = false;
       this.emit("tab-updated", {
         tabId: tab.id,
@@ -405,6 +428,7 @@ export class TabManager extends EventEmitter {
 
     // Handle page load failures — show inline error instead of white screen
     wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (wc.isDestroyed()) return;
       if (!isMainFrame) return; // Ignore sub-frame failures
       if (errorCode === -3) return; // ERR_ABORTED — user navigated away, not a real error
 
@@ -438,9 +462,11 @@ export class TabManager extends EventEmitter {
 
     // Override window.close() in page context to make it a no-op
     wc.on("did-finish-load", () => {
+      if (wc.isDestroyed()) return;
       wc.executeJavaScript("window.close = function() {};").catch(() => {});
     });
     wc.on("did-navigate-in-page", () => {
+      if (wc.isDestroyed()) return;
       wc.executeJavaScript("window.close = function() {};").catch(() => {});
     });
 
@@ -453,6 +479,7 @@ export class TabManager extends EventEmitter {
 
     // Track URL changes
     const onNavigate = (): void => {
+      if (wc.isDestroyed()) return;
       tab.url = wc.getURL();
       this.emit("tab-updated", {
         tabId: tab.id,
@@ -465,12 +492,59 @@ export class TabManager extends EventEmitter {
 
     // Track title changes
     wc.on("page-title-updated", (_event, title) => {
+      if (wc.isDestroyed()) return;
       tab.title = title;
       this.emit("tab-updated", {
         tabId: tab.id,
         url: tab.url,
         title: tab.title,
       });
+    });
+
+    // Handle renderer process crash (GPU OOM, heavy WebGL, etc.)
+    // Without this, the dead webContents stays in the view tree and any
+    // subsequent operation on it crashes the main process.
+    wc.on("render-process-gone", (_event, details) => {
+      if (this.destroyedTabs.has(tab.id) || !this.tabs.has(tab.id)) return;
+      if (this.isShuttingDown) return;
+
+      console.warn(`[TabManager] Renderer process gone for tab ${tab.id}: ${details.reason}`);
+
+      // Show a crash recovery page by replacing the tab
+      const crashUrl = tab.url;
+      const esc = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      const safeUrl = esc(crashUrl);
+
+      // Remove the crashed view from the window and destroy it
+      if (this.mainWindow) {
+        try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* already removed */ }
+      }
+      try { tab.view.webContents.close(); } catch { /* already dead */ }
+      this.tabs.delete(tab.id);
+      this.destroyedTabs.add(tab.id);
+      if (this.activeTabId === tab.id) this.activeTabId = null;
+      this.emit("tab-closed", { tabId: tab.id });
+
+      // Create a new tab with crash info page
+      const crashPage = `data:text/html;charset=utf-8,${encodeURIComponent(`
+        <!DOCTYPE html><html><head><style>
+          body { background: #1a1a2e; color: #a0a0b8; font-family: -apple-system, system-ui, sans-serif;
+            display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+          .box { text-align: center; max-width: 420px; }
+          h2 { color: #e0e0f0; margin-bottom: 8px; }
+          code { background: #2a2a4a; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+          .url { word-break: break-all; color: #7a7a9a; font-size: 13px; margin-top: 12px; }
+          button { margin-top: 16px; background: #3a3a6a; border: none; color: #e0e0f0; padding: 8px 20px;
+            border-radius: 6px; cursor: pointer; font-size: 13px; }
+          button:hover { background: #4a4a8a; }
+        </style></head><body><div class="box">
+          <h2>\\u9875\\u9762\\u5D29\\u6E83\\u4E86</h2>
+          <p>\\u8BE5\\u9875\\u9762\\u7684\\u6E32\\u67D3\\u8FDB\\u7A0B\\u5DF2\\u7EC8\\u6B62</p>
+          <p class="url">${safeUrl}</p>
+          <button onclick="location.href=${JSON.stringify(crashUrl).replace(/"/g, '&quot;')}">\\u91CD\\u65B0\\u52A0\\u8F7D</button>
+        </div></body></html>
+      `)}`;
+      this.createTab(crashPage);
     });
 
     // Handle unexpected WebContents destruction (e.g., window.close()
@@ -495,9 +569,7 @@ export class TabManager extends EventEmitter {
         this.activeTabId = null;
         // Remove destroyed view from window
         if (this.mainWindow) {
-          try {
-            this.mainWindow.contentView.removeChildView(tab.view);
-          } catch { /* already removed */ }
+          try { this.mainWindow.contentView.removeChildView(tab.view); } catch { /* already removed */ }
         }
         // Create a replacement tab
         this.createTab();

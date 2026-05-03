@@ -9,6 +9,8 @@ import {
   IconEdit,
   IconApi,
   IconGitHub,
+  IconFileText,
+  IconExport,
 } from '../../ui/Icons'
 import type { UpdateStatus } from '@shared/types'
 import PromptTemplateModal from '../PromptTemplateModal'
@@ -133,6 +135,24 @@ export default function GeneralSection() {
           </Button>
           <Button icon={<IconApi size={14} />} block onClick={() => setMcpModalOpen(true)}>
             管理 MCP 服务器
+          </Button>
+        </div>
+      </div>
+
+      {/* Error Logs */}
+      <div style={{ marginTop: 24 }}>
+        <div style={{ fontSize: 'var(--font-size-base)', fontWeight: 600, marginBottom: 12, color: 'var(--text-primary)' }}>
+          错误日志
+        </div>
+        <div style={{ fontSize: 'var(--font-size-sm)', color: 'var(--text-secondary)', marginBottom: 8 }}>
+          遇到问题时可导出日志文件发送给开发者以便排查
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button icon={<IconFileText size={14} />} onClick={() => window.electronAPI.openLogFolder()}>
+            打开日志目录
+          </Button>
+          <Button icon={<IconExport size={14} />} onClick={() => window.electronAPI.exportLogs()}>
+            导出日志
           </Button>
         </div>
       </div>

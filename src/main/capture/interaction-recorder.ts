@@ -35,9 +35,8 @@ export class InteractionRecorder extends EventEmitter {
   injectIntoWebContents(webContents: WebContents): void {
     this.loadScript()
     if (!this.scriptContent) return
-    try {
-      webContents.executeJavaScript(this.scriptContent, true)
-    } catch { /* page not ready */ }
+    if (webContents.isDestroyed()) return
+    webContents.executeJavaScript(this.scriptContent, true).catch(() => { /* page not ready or destroyed */ })
 
     this.injectedWebContents.add(webContents)
     webContents.once('destroyed', () => {
@@ -54,14 +53,12 @@ export class InteractionRecorder extends EventEmitter {
 
     // Re-inject on navigation for this tab
     const handler = () => {
-      if (!this.recording) return
-      try {
-        webContents.executeJavaScript(this.scriptContent!, true)
-        webContents.executeJavaScript(
-          `window.postMessage({type:'ar-interaction-control',recording:true},'*')`,
-          true
-        ).catch(() => {})
-      } catch { /* destroyed or not ready */ }
+      if (!this.recording || webContents.isDestroyed()) return
+      webContents.executeJavaScript(this.scriptContent!, true).catch(() => {})
+      webContents.executeJavaScript(
+        `window.postMessage({type:'ar-interaction-control',recording:true},'*')`,
+        true
+      ).catch(() => {})
     }
     webContents.on('did-navigate', handler)
     webContents.on('did-navigate-in-page', handler)
@@ -134,11 +131,13 @@ export class InteractionRecorder extends EventEmitter {
     }
 
     // Notify renderer (lightweight event, no heavy data)
-    this.rendererWebContents?.send('interaction:recorded', {
-      type: data.type,
-      sequence,
-      timestamp: data.timestamp,
-    })
+    if (this.rendererWebContents && !this.rendererWebContents.isDestroyed()) {
+      this.rendererWebContents.send('interaction:recorded', {
+        type: data.type,
+        sequence,
+        timestamp: data.timestamp,
+      })
+    }
     this.emit('interaction', event)
   }
 
